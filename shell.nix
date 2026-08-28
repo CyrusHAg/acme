@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> {} }:
 
 let
-  pythonEnv = pkgs.python311.withPackages (ps: with ps; [
+  pythonEnv = pkgs.python312.withPackages (ps: with ps; [
     virtualenv
     pyserial
     pyyaml
@@ -9,7 +9,7 @@ let
     websockets
     yq
   ]);
-  esptoolPkg = pkgs.python311Packages.esptool or pkgs.esptool;
+  esptoolPkg = pkgs.python312Packages.esptool or pkgs.esptool;
 in
 pkgs.mkShell {
   packages = with pkgs; [
