@@ -136,8 +136,7 @@ ${ADATA}/package_index.json: ${MKDIR}/bin/data
 ${ADATA}/packages/${CORE}: ${ADATA}/package_index.json
 	$(MAKE) _checksrc
 	$(INFO) "Installing core ${CORE}..."
-	${ARDUINO} core install ${CORE}:${CORE}
-	touch ${ADATA}/packages/${CORE}
+	${ARDUINO} core install ${CORE}:${CORE} && touch ${ADATA}/packages/${CORE}
 
 .PHONY: core
 core: ${ADATA}/packages/${CORE}
