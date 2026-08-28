@@ -121,12 +121,11 @@ fields:
 # --- arduino-cli config ---
 ${MKDIR}/bin/data:
 	$(INFO) "Setting up arduino-cli config..."
-	mkdir -p ${ADATA}
-	ADATA=${ADATA}; ADATA=$${ADATA//\//\\\/}; \
-	sed "s/arduino_data.*/arduino_data: $${ADATA}/g" \
-		${MKDIR}/arduino-cli.yaml > ${CFG}
-	ALIBS=${ALIBS}; ALIBS=$${ALIBS//\//\\\/}; \
-	sed -i "s/  user:.*/  user: $${ALIBS}/g" ${CFG}
+	@set -e; \
+	mkdir -p ${ADATA}; \
+	sed "s|arduino_data.*|arduino_data: ${ADATA}|g" \
+		${MKDIR}/arduino-cli.yaml > ${CFG}; \
+	sed -i "s|  user:.*|  user: ${ALIBS}|g" ${CFG}
 
 # --- core install ---
 ${ADATA}/package_index.json: ${MKDIR}/bin/data
