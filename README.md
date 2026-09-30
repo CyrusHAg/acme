@@ -1,7 +1,7 @@
 # ACME — Embedded build targets
 
 Generated Make targets for Arduino, ESP-IDF, and CH32 projects in reproducible
-Nix environments.
+Nix environments with pinned host tools.
 
 Each `project.yaml` selects a platform. ACME generates the corresponding
 `build-<platform>-<name>`, `flash-<platform>-<name>`, and
@@ -14,8 +14,63 @@ Each `project.yaml` selects a platform. ACME generates the corresponding
 - [Nix](https://nixos.org/download) — provides the host tools and isolated shells
 
 Arduino cores, ESP-IDF and its target toolchains, the CH32 RISC-V compiler, and
-ch32fun are installed under `bin/` automatically on first use. Versions are
-isolated, so projects pinned to different releases do not overwrite each other.
+ch32fun are installed under `bin/` automatically on first use. ESP-IDF and
+CH32 use versioned directories; Arduino CLI manages a shared core/library
+installation under `bin/`.
+
+## Host environment and dependency versions
+
+All four shells use the same Nixpkgs commit and content hash from
+`nix/nixpkgs.json`, through `nix/pkgs.nix`. They do not use the machine's Nix
+channel or its Nixpkgs overlays/configuration. The current pin is from the
+26.05 stable line and selects Python 3.11 and Arduino CLI 1.4.1. It supports
+Linux, Apple Silicon macOS, and Intel macOS; each machine gets native host
+tools from the same package definitions. No flakes setup is required.
+
+Check actual shell creation and required Python imports on each computer:
+
+```sh
+bash tools/check-shells.sh
+```
+
+This checks the host environments; representative firmware builds are still
+needed when adopting new host or firmware dependencies.
+
+The pin covers host tools and their Python dependencies, not everything
+downloaded by the firmware tools:
+
+- Arduino CLI continues to install cores and libraries. Cores and libraries
+  without a version select the latest available release on installation, so
+  a fresh clone can differ from an existing installation. Libraries can be
+  pinned with `Name@version` in `project.yaml`.
+- ESP-IDF defaults to `v6.0.3`. Use a release tag or commit in `version` rather
+  than a moving branch when stable firmware dependencies matter. Its own
+  installer manages its Python environment and target tools.
+- CH32 defaults to a fixed ch32fun commit and a compiler release verified by
+  SHA-256.
+
+The host Python environments contain only PyYAML and, where needed, pyserial.
+YAML command-line operations use `yq-go`; network discovery uses the official
+Arduino `mdns-discovery` 1.1.0 executable, downloaded on first scan into `bin/`
+with a fixed SHA-256 for Linux x86-64/ARM64 and macOS Intel/Apple Silicon.
+Discovery does not require the Arduino CLI, a Python virtualenv, or a system
+Avahi service. The check script runs shells sequentially. Nix and firmware
+compilation use their default parallelism. For Make, `NIX_SHELL_FLAGS` can
+pass optional settings to Nix.
+
+Keep the Nix pin under version control with ACME. Updating the machine's
+channel will not update ACME. To update ACME's host tools, change both `rev`
+and `sha256` in `nix/nixpkgs.json` deliberately, then open all four shells and
+build representative Arduino, IDF, and CH32 projects on Linux and the Macs
+before adopting the update. A successful Nix evaluation alone does not prove
+that packages build or that firmware compiles. Intel macOS support ends with
+the 26.05 Nixpkgs line, so future upgrades must take that into account if an
+Intel Mac is still in use.
+
+ESP-IDF Python environments already created under `bin/esp-idf-tools/` for
+a different Python interpreter may need to be recreated. Its backend's
+`clean-bin CONFIRM=yes` target removes the selected IDF checkout and tools;
+the next build installs them again.
 
 ---
 
@@ -212,9 +267,12 @@ Override any of these on the command line:
 ```sh
 make build-arduino-blink
 make flash-arduino-blink PORT=/dev/cu.usbmodem1234
-make ota-arduino-websockets OTAIP=192.168.1.42 OTAPORT=3232
+make ota-arduino-websockets OTAIP=192.168.1.42 OTAPORT=80
 make monitor-arduino-blink BAUD=9600
 ```
+
+HTTP OTA uses port 80 by default; set `OTAPORT` only when the device serves
+the ACME HTTP protocol on a different port.
 
 ---
 
@@ -231,7 +289,66 @@ Select device [1]:
 
 The selection is saved in `.cache/devices/usb/<sketch>` or
 `.cache/devices/ota/<sketch>`. If the device is no longer available on the next
-run, ACME asks whether to clear the saved config and rescan.
+USB operation, ACME asks whether to clear the saved config and rescan. OTA
+stores the device ID, hostname, address, and port in JSON, verifies `/info`
+before uploading, and rediscovers that same ID when its endpoint changes.
+It never silently replaces a saved device with another one. Use
+`make forget-ota-<platform>-<name>` to select a different device.
+
+## Shared HTTP OTA
+
+Arduino ESP32/ESP8266 and ESP-IDF examples implement the same `http-v1`
+contract:
+
+| Request | Behavior |
+|---|---|
+| `GET /info` | JSON containing `acme: 1`, `ota_protocol: "http-v1"`, stable MAC-based `id`, hostname, platform, and firmware version |
+| `POST /update` | Stream a firmware binary to the OTA partition; reboot only after successful completion |
+| `POST /update-fs` | Stream a filesystem image; reboot after successful completion |
+
+Uploads use raw `application/octet-stream` bodies with `Content-Length`, not
+multipart forms. The host sends them with `curl`; the firmware processes
+chunks of at most 1 KiB. Applications must provide an OTA-capable partition
+layout. Filesystem uploads write the filesystem image rather than individual
+files; mounted filesystems must be unmounted before updating them.
+
+Devices advertise `_arduino._tcp.local.` with TXT fields `acme=1`,
+`ota_protocol=http-v1`, and `id=<device-id>`. The Arduino service name allows
+reuse of the official discovery tool; the TXT fields distinguish ACME HTTP
+devices from legacy ArduinoOTA devices. Discovery has a configurable deadline
+(`OTA_DISCOVERY_TIMEOUT=5` by default), deduplicates identities, and handles
+service additions/removals. It requires multicast reachability on the local
+network. Rediscovery of a saved ID stops as soon as that device is found.
+The uploader uses the IP resolved by mDNS, so automatic discovery does not
+depend on the OS resolving `.local` names. An explicit `OTAIP` bypasses
+discovery but still verifies `/info`.
+
+```sh
+make scan-arduino-websockets
+make ota-arduino-websockets
+make ota-fs-arduino-websockets
+make ota-idf-ota OTAIP=192.168.1.42
+python3 tools/scan.py --timeout 5 --json
+```
+
+The bundled `AcmeOTA` Arduino library is available automatically during ACME
+builds. The `ota32` and `ota8266` examples show its minimal setup. The
+`websockets` example shares port 80 between HTTP OTA and its web page, keeps
+WebSockets on port 81, and unmounts SPIFFS during filesystem updates. The IDF
+example uses its native HTTP server and OTA APIs.
+
+**Migration:** firmware using the old `ArduinoOTA`/`espota.py` protocol must
+first receive the updated example over USB. The new host uploader does not
+speak the old protocol. Legacy `IP:port` cache entries are rediscovered and
+replaced with identity-based JSON records. The example endpoints retain the
+previous examples' unauthenticated local-network behavior.
+
+Application projects can set `ota_port`, `ota_path`, and `ota_fs_path` in
+`project.yaml`; those endpoints must match the firmware. Set `OTA_TIMEOUT`
+to change the upload deadline (120 seconds by default). Run host protocol
+tests with `python3 -m unittest discover -s tests -p test_ota.py`; native
+streaming tests use `test_firmware_ota.py` and require `g++`. These tests do not
+replace compilation with the target toolchains or OTA testing on real boards.
 
 ---
 
